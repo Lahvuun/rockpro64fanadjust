@@ -1,0 +1,6 @@
+Language: Cpp
+ColumnLimit: 80
+IndentWidth: 8
+ContinuationIndentWidth: 8
+UseTab: Always
+BreakBeforeBraces: Linux
