@@ -315,8 +315,11 @@ int main(int argc, char **argv)
 		goto cleanup_hwmons_dir;
 	}
 
-	set_fan_speed_from_temp(cpu_hwmon_path, fan_hwmon_path, min_temp,
-				max_temp);
+	if (set_fan_speed_from_temp(cpu_hwmon_path, fan_hwmon_path, min_temp,
+				max_temp)) {
+		log_fail("set_fan_speed_from_temp", __FILE__, __LINE__);
+		status = EXIT_FAILURE;
+	}
 
 cleanup_hwmons_dir:
 	if (closedir(hwmons_dir)) {
