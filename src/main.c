@@ -9,6 +9,8 @@
 #include <unistd.h>
 
 #define HWMON_DIR_PATH "/sys/class/hwmon/"
+#define HWMON_NAME_CPU "cpu"
+#define HWMON_NAME_FAN "pwmfan"
 #define MAX_FAN_SPEED 255.0
 
 static sig_atomic_t got_sigterm = 0;
@@ -24,21 +26,26 @@ static void handle_sigterm(int signum)
 	}
 }
 
-static int read_file_contents(char *name)
+static void log_fail(char *function_name, char *filename, int line)
+{
+	fprintf(stderr, "%s() failed at %s:%d\n", function_name, filename,
+		line);
+}
+
+static int read_line(char *file_path, char *out_line, size_t out_line_length)
 {
 	int status = 0;
 
-	FILE *file = fopen(name, "r");
-	if (!file) {
+	FILE *f = fopen(file_path, "r");
+	if (!f) {
 		perror("fopen() failed");
 		return -1;
 	}
-	size_t name_length = PATH_MAX;
-	if (getline(&name, &name_length, file) < 0 && errno) {
+	if (getline(&out_line, &out_line_length, f) < 1) {
 		perror("getline() failed");
 		status = -1;
 	}
-	if (fclose(file) == EOF) {
+	if (fclose(f) == EOF) {
 		perror("fclose() failed");
 		status = -1;
 	}
@@ -46,54 +53,57 @@ static int read_file_contents(char *name)
 	return status;
 }
 
-static int find_hwmon_paths(DIR *hwmons_dir, char *cpu_hwmon_path,
-			    char *fan_hwmon_path)
+static int find_hwmon_path(char *name, size_t name_length, DIR *dir,
+			   char *out_path)
 {
 	int status = 0;
 
-	char *current_name = calloc(PATH_MAX, sizeof(char));
-	for (struct dirent *current = readdir(hwmons_dir); current && !status;
-	     current = readdir(hwmons_dir)) {
-		if (current->d_name[0] == '.') {
+	char *name_path = calloc(PATH_MAX, sizeof(char));
+	if (!name_path) {
+		log_fail("calloc", __FILE__, __LINE__);
+		return -1;
+	}
+	char *name_value = calloc(128, sizeof(char));
+	if (!name_value) {
+		log_fail("calloc", __FILE__, __LINE__);
+		goto cleanup_name_path;
+	}
+
+	errno = 0;
+	for (struct dirent *dir_entry = readdir(dir); dir_entry;
+	     dir_entry = readdir(dir)) {
+		if (dir_entry->d_name[0] == '.') {
 			continue;
 		}
-		if (snprintf(current_name, PATH_MAX, HWMON_DIR_PATH "%s/name",
-			     current->d_name) < 0) {
-			fprintf(stderr, "snprintf() failed\n");
+		if (snprintf(out_path, PATH_MAX, HWMON_DIR_PATH "%s",
+			     dir_entry->d_name) < 0) {
+			log_fail("snprintf", __FILE__, __LINE__);
 			status = -1;
-			goto cleanup_current_name;
+			goto cleanup_name_value;
 		}
-		if (read_file_contents(current_name)) {
-			fprintf(stderr, "read_file_contents() failed\n");
+		if (snprintf(name_path, PATH_MAX, "%s/name", out_path) < 0) {
+			log_fail("snprintf", __FILE__, __LINE__);
 			status = -1;
-			goto cleanup_current_name;
+			goto cleanup_name_value;
 		}
-		if (!strcmp(current_name, "cpu\n")) {
-			if (snprintf(cpu_hwmon_path, PATH_MAX,
-				     HWMON_DIR_PATH "%s",
-				     current->d_name) < 0) {
-				fprintf(stderr, "snprintf() failed");
-				status = -1;
-				goto cleanup_current_name;
-			}
-		} else if (!strcmp(current_name, "pwmfan\n")) {
-			if (snprintf(fan_hwmon_path, PATH_MAX,
-				     HWMON_DIR_PATH "%s",
-				     current->d_name) < 0) {
-				fprintf(stderr, "snprintf() failed");
-				status = -1;
-				goto cleanup_current_name;
-			}
+		if (read_line(name_path, name_value, 128)) {
+			log_fail("read_line", __FILE__, __LINE__);
+			status = -1;
+			goto cleanup_name_value;
+		}
+		if (!strncmp(name, name_value, name_length)) {
+			goto cleanup_name_value;
 		}
 	}
 	if (errno) {
 		perror("readdir() failed");
-		return -1;
 	}
+	status = -1;
 
-cleanup_current_name:
-	free(current_name);
-
+cleanup_name_value:
+	free(name_value);
+cleanup_name_path:
+	free(name_path);
 	return status;
 }
 
@@ -291,19 +301,16 @@ int main(int argc, char **argv)
 		goto cleanup_fan_hwmon_path;
 	}
 
-	if (find_hwmon_paths(hwmons_dir, cpu_hwmon_path, fan_hwmon_path)) {
-		fprintf(stderr, "find_hwmon_paths() failed\n");
+	if (find_hwmon_path(HWMON_NAME_CPU, sizeof(HWMON_NAME_CPU) - 1,
+			    hwmons_dir, cpu_hwmon_path)) {
+		log_fail("find_hwmon_path", __FILE__, __LINE__);
 		status = EXIT_FAILURE;
 		goto cleanup_hwmons_dir;
 	}
-
-	if (!strncmp(cpu_hwmon_path, "", PATH_MAX)) {
-		fprintf(stderr, "couldn't find cpu hwmon\n");
-		status = EXIT_FAILURE;
-		goto cleanup_hwmons_dir;
-	}
-	if (!strncmp(fan_hwmon_path, "", PATH_MAX)) {
-		fprintf(stderr, "couldn't find fan hwmon\n");
+	rewinddir(hwmons_dir);
+	if (find_hwmon_path(HWMON_NAME_FAN, sizeof(HWMON_NAME_FAN) - 1,
+			    hwmons_dir, fan_hwmon_path)) {
+		log_fail("find_hwmon_path", __FILE__, __LINE__);
 		status = EXIT_FAILURE;
 		goto cleanup_hwmons_dir;
 	}
