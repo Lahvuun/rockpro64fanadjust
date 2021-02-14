@@ -139,6 +139,32 @@ static int write_fan_speed(double value, FILE *file)
 	return 0;
 }
 
+static int read_double_from_file(FILE *file, double *out_value)
+{
+	int status = 0;
+
+	size_t fan_speed_length = 128;
+	char *fan_speed = calloc(fan_speed_length, sizeof(char));
+	if (!fan_speed) {
+		log_fail("calloc", __FILE__, __LINE__);
+		return -1;
+	}
+	if (getline(&fan_speed, &fan_speed_length, file) < 0 && errno) {
+		perror("getline() failed");
+		status = -1;
+		goto cleanup_fan_speed;
+	}
+	*out_value = strtod(fan_speed, NULL);
+	if (errno) {
+		perror("strtod() failed");
+		status = -1;
+	}
+cleanup_fan_speed:
+	free(fan_speed);
+
+	return status;
+}
+
 static int set_fan_speed_from_temp(char *cpu_hwmon_path, char *fan_hwmon_path,
 				   double min_temp, double max_temp)
 {
@@ -173,30 +199,26 @@ static int set_fan_speed_from_temp(char *cpu_hwmon_path, char *fan_hwmon_path,
 		status = -1;
 		goto cleanup_cpu_file;
 	}
-	FILE *fan_file = fopen(fan_pwm_path, "w");
+	FILE *fan_file = fopen(fan_pwm_path, "r+");
 	if (!fan_file) {
 		perror("fopen(cpu_temp_path, \"r\") failed");
 		status = -1;
 		goto cleanup_cpu_file;
 	}
 
-	size_t temperature_length = 128;
-	char *temperature = calloc(temperature_length, sizeof(char));
+	double old_fan_speed = 0.0;
+	if (read_double_from_file(fan_file, &old_fan_speed)) {
+		log_fail("read_double_from_file", __FILE__, __LINE__);
+		status = -1;
+		goto cleanup_cpu_file;
+	}
 	double multiplier = MAX_FAN_SPEED / (max_temp - min_temp);
 	double temp = 0.0;
-	double old_fan_speed = 255.0;
 	double new_fan_speed = 0.0;
 	double speed_diff = 0.0;
 	while (!got_sigterm) {
-		if (getline(&temperature, &temperature_length, cpu_file) < 0 &&
-		    errno) {
-			perror("getline() failed");
-			status = -1;
-			break;
-		}
-		temp = strtod(temperature, NULL);
-		if (errno) {
-			perror("strtol() failed");
+		if (read_double_from_file(cpu_file, &temp)) {
+			log_fail("read_double_from_file", __FILE__, __LINE__);
 			status = -1;
 			break;
 		}
@@ -224,7 +246,6 @@ static int set_fan_speed_from_temp(char *cpu_hwmon_path, char *fan_hwmon_path,
 		sleep(10);
 	}
 	write_fan_speed(MAX_FAN_SPEED, fan_file);
-	free(temperature);
 
 	if (fclose(fan_file) == EOF) {
 		perror("fclose(fan_file) failed");
@@ -316,7 +337,7 @@ int main(int argc, char **argv)
 	}
 
 	if (set_fan_speed_from_temp(cpu_hwmon_path, fan_hwmon_path, min_temp,
-				max_temp)) {
+				    max_temp)) {
 		log_fail("set_fan_speed_from_temp", __FILE__, __LINE__);
 		status = EXIT_FAILURE;
 	}
