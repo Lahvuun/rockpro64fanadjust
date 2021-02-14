@@ -215,6 +215,7 @@ static int set_fan_speed_from_temp(FILE *fan_file, FILE *cpu_file,
 	}
 	double speed_old = MAX_FAN_SPEED;
 	if (read_double(fan_file, hwmon_value_str, 16, &speed_old)) {
+		log_fail("read_double", __FILE__, __LINE__);
 		status = -1;
 		goto cleanup_hwmon_value_str;
 	}
@@ -224,6 +225,7 @@ static int set_fan_speed_from_temp(FILE *fan_file, FILE *cpu_file,
 	double speed_diff = 0.0;
 	while (!got_sigterm) {
 		if (read_double(cpu_file, hwmon_value_str, 16, &temp)) {
+			log_fail("read_double", __FILE__, __LINE__);
 			status = -1;
 			break;
 		}
