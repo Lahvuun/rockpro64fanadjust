@@ -12,7 +12,7 @@
 #define HWMON_NAME_FAN "pwmfan"
 #define MAX_FAN_SPEED 255.0
 
-static sig_atomic_t got_sigterm = 0;
+static volatile sig_atomic_t got_sigterm = 0;
 
 static void handle_sigterm(int signum)
 {
