@@ -243,6 +243,7 @@ static int set_fan_speed_from_temp(FILE *fan_file, FILE *cpu_file,
 				status = -1;
 				break;
 			}
+			speed_old = speed_new;
 		}
 		sleep(10);
 	}
