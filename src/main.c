@@ -1,5 +1,6 @@
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -119,15 +120,14 @@ cleanup_dir:
 	return status;
 }
 
-static FILE *fopen_hwmon(char *name, size_t name_symbols, char *node,
-			 char *modes)
+static int open_hwmon(char *name, size_t name_symbols, char *node, int oflag)
 {
-	FILE *file = NULL;
+	int fd = -1;
 
 	char *hwmon_dir = calloc(PATH_MAX, sizeof(char));
 	if (!hwmon_dir) {
 		log_fail("calloc", __FILE__, __LINE__);
-		return NULL;
+		return -1;
 	}
 	if (find_hwmon_path(name, name_symbols, hwmon_dir)) {
 		log_fail("find_hwmon_path", __FILE__, __LINE__);
@@ -142,9 +142,9 @@ static FILE *fopen_hwmon(char *name, size_t name_symbols, char *node,
 		log_fail("snprintf", __FILE__, __LINE__);
 		goto cleanup_hwmon_node;
 	}
-	file = fopen(hwmon_node, modes);
-	if (!file) {
-		perror("fopen() failed");
+	fd = open(hwmon_node, oflag);
+	if (fd < 0) {
+		perror("open() failed");
 	}
 
 cleanup_hwmon_node:
@@ -152,10 +152,10 @@ cleanup_hwmon_node:
 cleanup_hwmon_dir:
 	free(hwmon_dir);
 
-	return file;
+	return fd;
 }
 
-static int write_fan_speed(double value, FILE *file)
+static int write_fan_speed(int fd, double value)
 {
 	if (value < 0.0) {
 		fprintf(stderr,
@@ -171,27 +171,24 @@ static int write_fan_speed(double value, FILE *file)
 
 	char value_str[5] = "";
 	snprintf(value_str, 5, "%.0f\n", value);
-	size_t items_written = 0;
-	do {
-		items_written += fwrite(value_str, sizeof(char), 5, file);
-		if (ferror(file)) {
-			fprintf(stderr, "fwrite() failed\n");
-			return -1;
-		}
-	} while (items_written < 5);
-	if (fflush(file) == EOF) {
-		perror("fflush() failed");
+	// TODO: handle partial writes.
+	// TODO: handle EINTR.
+	if (write(fd, value_str, 5) < 0) {
+		perror("fwrite() failed");
 		return -1;
 	}
 
 	return 0;
 }
 
-static int read_double(FILE *file, char *double_str, size_t double_str_length,
+static int read_double(int fd, char *double_str, size_t double_str_length,
 		       double *out_value)
 {
-	if (getline(&double_str, &double_str_length, file) < 0 && errno) {
-		perror("getline() failed");
+	// TODO: handle partial reads.
+	// TODO: handle EINTR.
+	ssize_t r = pread(fd, double_str, double_str_length, 0);
+	if (r < 0) {
+		perror("read() failed");
 		return -1;
 	}
 	*out_value = strtod(double_str, NULL);
@@ -203,8 +200,8 @@ static int read_double(FILE *file, char *double_str, size_t double_str_length,
 	return 0;
 }
 
-static int set_fan_speed_from_temp(FILE *fan_file, FILE *cpu_file,
-				   double min_temp, double max_temp)
+static int set_fan_speed_from_temp(int fan_fd, int cpu_fd, double min_temp,
+				   double max_temp)
 {
 	int status = 0;
 
@@ -214,7 +211,7 @@ static int set_fan_speed_from_temp(FILE *fan_file, FILE *cpu_file,
 		return -1;
 	}
 	double speed_old = MAX_FAN_SPEED;
-	if (read_double(fan_file, hwmon_value_str, 16, &speed_old)) {
+	if (read_double(fan_fd, hwmon_value_str, 16, &speed_old)) {
 		log_fail("read_double", __FILE__, __LINE__);
 		status = -1;
 		goto cleanup_hwmon_value_str;
@@ -224,7 +221,7 @@ static int set_fan_speed_from_temp(FILE *fan_file, FILE *cpu_file,
 	double multiplier = MAX_FAN_SPEED / (max_temp - min_temp);
 	double speed_diff = 0.0;
 	while (!got_sigterm) {
-		if (read_double(cpu_file, hwmon_value_str, 16, &temp)) {
+		if (read_double(cpu_fd, hwmon_value_str, 16, &temp)) {
 			log_fail("read_double", __FILE__, __LINE__);
 			status = -1;
 			break;
@@ -238,7 +235,7 @@ static int set_fan_speed_from_temp(FILE *fan_file, FILE *cpu_file,
 		}
 		speed_diff = speed_old - speed_new;
 		if (speed_diff <= -1 || speed_diff >= 1) {
-			if (write_fan_speed(speed_new, fan_file)) {
+			if (write_fan_speed(fan_fd, speed_new)) {
 				log_fail("write_fan_speed", __FILE__, __LINE__);
 				status = -1;
 				break;
@@ -247,7 +244,7 @@ static int set_fan_speed_from_temp(FILE *fan_file, FILE *cpu_file,
 		}
 		sleep(10);
 	}
-	write_fan_speed(MAX_FAN_SPEED, fan_file);
+	write_fan_speed(fan_fd, MAX_FAN_SPEED);
 
 cleanup_hwmon_value_str:
 	free(hwmon_value_str);
@@ -293,32 +290,32 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	FILE *cpu_file = fopen_hwmon(HWMON_NAME_CPU, sizeof(HWMON_NAME_CPU) - 1,
-				     "temp1_input", "r");
-	if (!cpu_file) {
-		log_fail("fopen_hwmon", __FILE__, __LINE__);
+	int cpu_fd = open_hwmon(HWMON_NAME_CPU, sizeof(HWMON_NAME_CPU) - 1,
+				"temp1_input", O_RDONLY);
+	if (!cpu_fd) {
+		log_fail("open_hwmon", __FILE__, __LINE__);
 		return EXIT_FAILURE;
 	}
-	FILE *fan_file = fopen_hwmon(HWMON_NAME_FAN, sizeof(HWMON_NAME_FAN) - 1,
-				     "pwm1", "r+");
-	if (!fan_file) {
-		log_fail("fopen_hwmon", __FILE__, __LINE__);
+	int fan_fd = open_hwmon(HWMON_NAME_FAN, sizeof(HWMON_NAME_FAN) - 1,
+				"pwm1", O_RDWR);
+	if (!fan_fd) {
+		log_fail("open_hwmon", __FILE__, __LINE__);
 		status = EXIT_FAILURE;
-		goto cleanup_cpu_file;
+		goto cleanup_cpu_fd;
 	}
 
-	if (set_fan_speed_from_temp(fan_file, cpu_file, min_temp, max_temp)) {
+	if (set_fan_speed_from_temp(fan_fd, cpu_fd, min_temp, max_temp)) {
 		log_fail("set_fan_speed_from_temp", __FILE__, __LINE__);
 		status = EXIT_FAILURE;
 	}
 
-	if (fclose(fan_file) == EOF) {
-		perror("fclose() failed");
+	if (close(fan_fd) < 0) {
+		perror("close() failed");
 		status = EXIT_FAILURE;
 	}
-cleanup_cpu_file:
-	if (fclose(cpu_file) == EOF) {
-		perror("fclose() failed");
+cleanup_cpu_fd:
+	if (close(cpu_fd) < 0) {
+		perror("close() failed");
 		status = EXIT_FAILURE;
 	}
 
