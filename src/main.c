@@ -201,7 +201,7 @@ static int read_double(int fd, char *double_str, size_t double_str_length,
 }
 
 static int set_fan_speed_from_temp(int fan_fd, int cpu_fd, double min_temp,
-				   double max_temp)
+				   double max_temp, double min_fan_speed)
 {
 	int status = 0;
 
@@ -218,7 +218,8 @@ static int set_fan_speed_from_temp(int fan_fd, int cpu_fd, double min_temp,
 	}
 	double temp = 0.0;
 	double speed_new = 0.0;
-	double multiplier = MAX_FAN_SPEED / (max_temp - min_temp);
+	double multiplier =
+		(MAX_FAN_SPEED - min_fan_speed) / (max_temp - min_temp);
 	double speed_diff = 0.0;
 	while (!got_sigterm) {
 		if (read_double(cpu_fd, hwmon_value_str, 16, &temp)) {
@@ -227,11 +228,12 @@ static int set_fan_speed_from_temp(int fan_fd, int cpu_fd, double min_temp,
 			break;
 		}
 		if (temp <= min_temp) {
-			speed_new = 0.0;
+			speed_new = min_fan_speed;
 		} else if (temp >= max_temp) {
 			speed_new = MAX_FAN_SPEED;
 		} else {
-			speed_new = multiplier * (temp - min_temp);
+			speed_new =
+				min_fan_speed + multiplier * (temp - min_temp);
 		}
 		speed_diff = speed_old - speed_new;
 		if (speed_diff <= -1 || speed_diff >= 1) {
@@ -271,12 +273,13 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	if (argc != 3) {
+	if (argc != 4) {
 		if (argc < 1) {
 			fprintf(stderr, "argc is < 1\n");
 			return EXIT_FAILURE;
 		}
-		fprintf(stderr, "usage: %s min_temp max_temp\n", argv[0]);
+		fprintf(stderr, "usage: %s min_temp max_temp min_fan_speed\n",
+			argv[0]);
 		return EXIT_FAILURE;
 	}
 	double min_temp = strtod(argv[1], NULL);
@@ -285,6 +288,11 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 	double max_temp = strtod(argv[2], NULL);
+	if (errno) {
+		perror("strtod() failed\n");
+		return EXIT_FAILURE;
+	}
+	double min_fan_speed = strtod(argv[3], NULL);
 	if (errno) {
 		perror("strtod() failed\n");
 		return EXIT_FAILURE;
@@ -304,7 +312,8 @@ int main(int argc, char **argv)
 		goto cleanup_cpu_fd;
 	}
 
-	if (set_fan_speed_from_temp(fan_fd, cpu_fd, min_temp, max_temp)) {
+	if (set_fan_speed_from_temp(fan_fd, cpu_fd, min_temp, max_temp,
+				    min_fan_speed)) {
 		log_fail("set_fan_speed_from_temp", __FILE__, __LINE__);
 		status = EXIT_FAILURE;
 	}
