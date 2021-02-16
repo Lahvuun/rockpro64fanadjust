@@ -228,7 +228,7 @@ static int set_fan_speed_from_temp(int fan_fd, int cpu_fd, double min_temp,
 			break;
 		}
 		if (temp <= min_temp) {
-			speed_new = min_fan_speed;
+			speed_new = 0.0;
 		} else if (temp >= max_temp) {
 			speed_new = MAX_FAN_SPEED;
 		} else {
